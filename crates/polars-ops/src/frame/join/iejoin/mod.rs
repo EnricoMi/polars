@@ -364,15 +364,16 @@ unsafe fn materialize_join(
     suffix: Option<PlSmallStr>,
 ) -> PolarsResult<DataFrame> {
     try_raise_keyboard_interrupt();
-    let mut sorted_left_row_idx = left_row_idx.sort(false).into_no_null_iter().peekable();
-    let left_idx_not_in_inner = (0..left.height() as u64).into_iter().filter(|left| {
+    let sorted_left_row_idx = left_row_idx.sort(false);
+    let mut sorted_left_row_idx = sorted_left_row_idx .into_no_null_iter().peekable();
+    let left_idx_not_in_inner = (0..left.height() as IdxSize).into_iter().filter(|left| {
         while sorted_left_row_idx.next_if(|inner| inner < left).is_some() {}
         sorted_left_row_idx.peek().map_or(true, |inner| left < inner)
     });
-    let outer_left_row_idx: IdxCa = IdxCa::from_iter(left_idx_not_in_inner);
+    let outer_left_row_idx: IdxCa = IdxCa::from_iter_values(PlSmallStr::EMPTY, left_idx_not_in_inner);
     let right_nulls = outer_left_row_idx.clear() as IdxCa;
-    let left_row_idx = &(left_row_idx + outer_left_row_idx) as &IdxCa;
-    let right_row_idx = &(right_row_idx + right_nulls) as &IdxCa;
+    let left_row_idx = &(left_row_idx + &outer_left_row_idx) as &IdxCa;
+    let right_row_idx = &(right_row_idx + &right_nulls) as &IdxCa;
     let (join_left, join_right) = {
         POOL.join(
             || left.take_unchecked(left_row_idx),
