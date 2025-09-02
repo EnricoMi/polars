@@ -21,7 +21,7 @@ use polars_utils::total_ord::{TotalEq, TotalOrd};
 use rayon::prelude::*;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-
+use serde::__private::de::IdentifierDeserializer;
 use crate::frame::_finish_join;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -365,13 +365,13 @@ unsafe fn materialize_join(
 ) -> PolarsResult<DataFrame> {
     try_raise_keyboard_interrupt();
     let sorted_left_row_idx = left_row_idx.sort(false);
-    let mut sorted_left_row_idx = sorted_left_row_idx .into_no_null_iter().peekable();
+    let mut sorted_left_row_idx = sorted_left_row_idx.into_no_null_iter().peekable();
     let left_idx_not_in_inner = (0..left.height() as IdxSize).into_iter().filter(|left| {
         while sorted_left_row_idx.next_if(|inner| inner < left).is_some() {}
         sorted_left_row_idx.peek().map_or(true, |inner| left < inner)
     });
     let outer_left_row_idx: IdxCa = IdxCa::from_iter_values(PlSmallStr::EMPTY, left_idx_not_in_inner);
-    let right_nulls = outer_left_row_idx.clear() as IdxCa;
+    let right_nulls = IdxCa::full_null(PlSmallStr::EMPTY, outer_left_row_idx.len());
     let left_row_idx = &(left_row_idx + &outer_left_row_idx) as &IdxCa;
     let right_row_idx = &(right_row_idx + &right_nulls) as &IdxCa;
     let (join_left, join_right) = {
