@@ -21,7 +21,7 @@ use polars_utils::total_ord::{TotalEq, TotalOrd};
 use rayon::prelude::*;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use serde::__private::de::IdentifierDeserializer;
+
 use crate::frame::_finish_join;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -353,7 +353,30 @@ pub(super) fn iejoin(
     } else {
         piecewise_merge_join_tuples(selected_left, selected_right, options, slice)
     }?;
-    unsafe { materialize_join(left, right, &left_row_idx, &right_row_idx, suffix) }
+    unsafe {
+        let (left_row_idx, right_row_idx) = { complete_join(left.height(), right.height(), &left_row_idx, &right_row_idx, options) }?;
+        materialize_join(left, right, &left_row_idx, &right_row_idx, suffix)
+    }
+}
+
+unsafe fn complete_join(
+    left_height: usize,
+    right_height: usize,
+    left_row_idx: &IdxCa,
+    right_row_idx: &IdxCa,
+    options: &IEJoinOptions,
+) -> PolarsResult<(IdxCa, IdxCa)> {
+    let sorted_left_row_idx = left_row_idx.sort(false);
+    let mut sorted_left_row_idx = sorted_left_row_idx.into_no_null_iter().peekable();
+    let left_idx_not_in_inner = (0..left_height as IdxSize).into_iter().filter(|left| {
+        while sorted_left_row_idx.next_if(|inner| inner < left).is_some() {}
+        sorted_left_row_idx.peek().map_or(true, |inner| left < inner)
+    });
+    let outer_left_row_idx: IdxCa = IdxCa::from_iter_values(PlSmallStr::EMPTY, left_idx_not_in_inner);
+    let right_nulls = IdxCa::full_null(PlSmallStr::EMPTY, outer_left_row_idx.len());
+    let left_row_idx = (left_row_idx + &outer_left_row_idx) as IdxCa;
+    let right_row_idx = (right_row_idx + &right_nulls) as IdxCa;
+    Ok((left_row_idx, right_row_idx))
 }
 
 unsafe fn materialize_join(
@@ -364,16 +387,6 @@ unsafe fn materialize_join(
     suffix: Option<PlSmallStr>,
 ) -> PolarsResult<DataFrame> {
     try_raise_keyboard_interrupt();
-    let sorted_left_row_idx = left_row_idx.sort(false);
-    let mut sorted_left_row_idx = sorted_left_row_idx.into_no_null_iter().peekable();
-    let left_idx_not_in_inner = (0..left.height() as IdxSize).into_iter().filter(|left| {
-        while sorted_left_row_idx.next_if(|inner| inner < left).is_some() {}
-        sorted_left_row_idx.peek().map_or(true, |inner| left < inner)
-    });
-    let outer_left_row_idx: IdxCa = IdxCa::from_iter_values(PlSmallStr::EMPTY, left_idx_not_in_inner);
-    let right_nulls = IdxCa::full_null(PlSmallStr::EMPTY, outer_left_row_idx.len());
-    let left_row_idx = &(left_row_idx + &outer_left_row_idx) as &IdxCa;
-    let right_row_idx = &(right_row_idx + &right_nulls) as &IdxCa;
     let (join_left, join_right) = {
         POOL.join(
             || left.take_unchecked(left_row_idx),
@@ -621,5 +634,34 @@ fn slice_end_index(slice: Option<(i64, usize)>) -> Option<i64> {
     match slice {
         Some((offset, len)) if offset >= 0 => Some(offset.saturating_add_unsigned(len as u64)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_complete_join() -> PolarsResult<()> {
+        let op1 = InequalityOperator::Gt;
+        let op2 = Some(InequalityOperator::Gt);
+        let options = IEJoinOptions {
+            operator1: op1,
+            operator2: op2,
+        };
+        let left = IdxCa::from_vec(Default::default(), vec![]);
+        let right = IdxCa::from_vec(Default::default(), vec![]);
+        let (left_row_idx, right_row_idx) = unsafe {
+            complete_join(10, 20, &left, &right, &options)
+        }?;
+
+        assert_eq!(
+            left_row_idx.to_vec(), &[]
+        );
+        assert_eq!(
+            right_row_idx.to_vec(), &[]
+        );
+
+        Ok(())
     }
 }
