@@ -114,8 +114,7 @@ pub(super) trait L1Array {
         l1_index: usize,
         bit_array: &mut FilteredBitArray,
         op1: InequalityOperator,
-        left_row_ids: &mut Vec<IdxSize>,
-        right_row_ids: &mut Vec<IdxSize>,
+        row_ids: &mut Vec<(IdxSize, IdxSize)>,
     ) -> i64;
 
     unsafe fn process_lhs_entry(
@@ -123,8 +122,7 @@ pub(super) trait L1Array {
         l1_index: usize,
         bit_array: &FilteredBitArray,
         op1: InequalityOperator,
-        left_row_ids: &mut Vec<IdxSize>,
-        right_row_ids: &mut Vec<IdxSize>,
+        row_ids: &mut Vec<(IdxSize, IdxSize)>,
     ) -> i64;
 
     unsafe fn mark_visited(&self, index: usize, bit_array: &mut FilteredBitArray);
@@ -166,8 +164,7 @@ fn find_matches_in_l1<T>(
     row_index: i64,
     bit_array: &FilteredBitArray,
     op1: InequalityOperator,
-    left_row_ids: &mut Vec<IdxSize>,
-    right_row_ids: &mut Vec<IdxSize>,
+    row_ids: &mut Vec<(IdxSize, IdxSize)>,
 ) -> i64
 where
     T: NumericNative,
@@ -188,8 +185,9 @@ where
             // set bit is within bounds.
             let right_row_index = l1_array.get_unchecked(set_bit).row_index;
             debug_assert!(right_row_index < 0);
-            left_row_ids.push((row_index - 1) as IdxSize);
-            right_row_ids.push((-right_row_index) as IdxSize - 1);
+            let left_row_idx = (row_index - 1) as IdxSize;
+            let right_row_idx = (-right_row_index) as IdxSize - 1;
+            row_ids.push((left_row_idx, right_row_idx));
             match_count += 1;
         })
     };
@@ -206,8 +204,7 @@ where
         l1_index: usize,
         bit_array: &mut FilteredBitArray,
         op1: InequalityOperator,
-        left_row_ids: &mut Vec<IdxSize>,
-        right_row_ids: &mut Vec<IdxSize>,
+        row_ids: &mut Vec<(IdxSize, IdxSize)>,
     ) -> i64 {
         let row_index = self.get_unchecked(l1_index).row_index;
         let from_lhs = row_index > 0;
@@ -218,8 +215,7 @@ where
                 row_index,
                 bit_array,
                 op1,
-                left_row_ids,
-                right_row_ids,
+                row_ids,
             )
         } else {
             bit_array.set_bit_unchecked(l1_index);
@@ -232,8 +228,7 @@ where
         l1_index: usize,
         bit_array: &FilteredBitArray,
         op1: InequalityOperator,
-        left_row_ids: &mut Vec<IdxSize>,
-        right_row_ids: &mut Vec<IdxSize>,
+        row_ids: &mut Vec<(IdxSize, IdxSize)>,
     ) -> i64 {
         let row_index = self.get_unchecked(l1_index).row_index;
         let from_lhs = row_index > 0;
@@ -244,8 +239,7 @@ where
                 row_index,
                 bit_array,
                 op1,
-                left_row_ids,
-                right_row_ids,
+                row_ids,
             )
         } else {
             0
