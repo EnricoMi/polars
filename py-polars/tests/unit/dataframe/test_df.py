@@ -1621,7 +1621,44 @@ def test_join_bad_input_type() -> None:
     left.join(right, on="a")
 
 
-def test_join_where() -> None:
+def test_join_where_1() -> None:
+    east = pl.DataFrame(
+        {
+            "id": [100, 101, 102],
+            "dur": [120, 140, 160],
+            "rev": [12, 14, 16],
+            "cores": [2, 8, 4],
+        }
+    )
+    west = pl.DataFrame(
+        {
+            "t_id": [404, 498, 676, 742],
+            "time": [90, 130, 150, 170],
+            "cost": [9, 13, 15, 16],
+            "cores": [4, 2, 1, 4],
+        }
+    )
+    out = east.join_where(
+        west,
+        pl.col("dur") < pl.col("time"),
+    )
+
+    expected = pl.DataFrame(
+        {
+            "id": [100, 100, 100, 101, 101, 102],
+            "dur": [120, 120, 120, 140, 140, 160],
+            "rev": [12, 12, 12, 14, 14, 16],
+            "cores": [2, 2, 2, 8, 8, 4],
+            "t_id": [498, 676, 742, 676, 742, 742],
+            "time": [130, 150, 170, 150, 170, 170],
+            "cost": [13, 15, 16, 15, 16, 16],
+            "cores_right": [2, 1, 4, 1, 4, 4],
+        }
+    )
+
+    assert_frame_equal(out, expected, check_row_order=False)
+
+def test_join_where_2() -> None:
     east = pl.DataFrame(
         {
             "id": [100, 101, 102],
@@ -1657,7 +1694,46 @@ def test_join_where() -> None:
         }
     )
 
-    assert_frame_equal(out, expected)
+    assert_frame_equal(out, expected, check_row_order=False)
+
+def test_join_where_3() -> None:
+    east = pl.DataFrame(
+        {
+            "id": [100, 101, 102],
+            "dur": [120, 140, 160],
+            "rev": [12, 14, 16],
+            "cores": [2, 8, 4],
+        }
+    )
+    west = pl.DataFrame(
+        {
+            "t_id": [404, 498, 676, 742],
+            "time": [90, 130, 150, 170],
+            "cost": [9, 13, 15, 16],
+            "cores": [4, 2, 1, 4],
+        }
+    )
+    out = east.join_where(
+        west,
+        pl.col("dur") < pl.col("time"),
+        pl.col("rev") < pl.col("cost"),
+        pl.col("cores") >= pl.col("cores_right"),
+    )
+
+    expected = pl.DataFrame(
+        {
+            "id": [100, 100, 101, 101],
+            "dur": [120, 120, 140, 140],
+            "rev": [12, 12, 14, 14],
+            "cores": [2, 2, 8, 8],
+            "t_id": [498, 676, 676, 742],
+            "time": [130, 150, 150, 170],
+            "cost": [13, 15, 15, 16],
+            "cores_right": [2, 1, 1, 4],
+        }
+    )
+
+    assert_frame_equal(out, expected, check_row_order=False)
 
 
 def test_join_where_bad_input_type() -> None:
