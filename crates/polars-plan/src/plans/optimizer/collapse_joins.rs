@@ -195,8 +195,7 @@ pub fn optimize(
                                 // - we already have an IEjoin or Inner join
                                 // - we already have an Inner join
                                 // - data is not numeric (our iejoin doesn't yet implement that)
-                                if ie_op.len() >= 2
-                                    || !eq_left_on.is_empty()
+                                if !eq_left_on.is_empty()
                                     || !is_numeric(left, expr_arena, left_schema)
                                 {
                                     remaining_predicates.push(node);
@@ -286,7 +285,6 @@ fn insert_fitting_join(
     {
         debug_assert_eq!(ie_op.len(), ie_left_on.len());
         debug_assert_eq!(ie_left_on.len(), ie_right_on.len());
-        debug_assert!(ie_op.len() <= 2);
     }
     debug_assert!(matches!(options.args.how, JoinType::Cross));
 
@@ -318,16 +316,10 @@ fn insert_fitting_join(
         },
         #[cfg(feature = "iejoin")]
         _ if !ie_op.is_empty() => {
-            // We can only IE join up to 2 operators
-
-            let operator1 = ie_op[0];
-            let operator2 = ie_op.get(1).copied();
-
             // Do an IEjoin.
             options.args.how = JoinType::IEJoin;
             options.options = Some(JoinTypeOptionsIR::IEJoin(IEJoinOptions {
-                operator1,
-                operator2,
+                operators: ie_op.to_vec()
             }));
             // We need to make sure not to delete any columns
             options.args.coalesce = JoinCoalesce::KeepColumns;

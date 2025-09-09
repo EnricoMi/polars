@@ -536,11 +536,9 @@ pub(crate) fn into_py(py: Python<'_>, plan: &IR) -> PyResult<PyObject> {
                             };
                             (
                                 name,
-                                crate::Wrap(ie_options.operator1).into_py_any(py)?,
-                                ie_options.operator2.as_ref().map_or_else(
-                                    || Ok(py.None()),
-                                    |op| crate::Wrap(*op).into_py_any(py),
-                                )?,
+                                ie_options.operators.iter().flat_map(
+                                    |op| crate::Wrap(*op).into_py_any(py)
+                                ).collect::<Vec<_>>().into_py_any(py)?
                             )
                                 .into_py_any(py)?
                         },

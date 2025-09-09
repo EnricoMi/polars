@@ -42,8 +42,7 @@ impl InequalityOperator {
 #[derive(Clone, Debug, PartialEq, Eq, Default, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct IEJoinOptions {
-    pub operator1: InequalityOperator,
-    pub operator2: Option<InequalityOperator>,
+    pub operators: Vec<InequalityOperator>
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -212,7 +211,7 @@ pub(super) fn iejoin_par(
     slice: Option<(i64, usize)>,
 ) -> PolarsResult<DataFrame> {
     let l1_descending = matches!(
-        options.operator1,
+        options.operators[0],
         InequalityOperator::Gt | InequalityOperator::GtEq
     );
 
@@ -270,7 +269,7 @@ pub(super) fn iejoin_par(
             return Ok(None);
         };
 
-        let include_block = match options.operator1 {
+        let include_block = match options.operators[0] {
             InequalityOperator::Lt => min_l < max_r,
             InequalityOperator::LtEq => min_l <= max_r,
             InequalityOperator::Gt => max_l > min_r,
@@ -300,10 +299,10 @@ pub(super) fn iejoin_par(
             r[0].set_sorted_flag(sorted_flag);
 
             // Compute the row indexes
-            let (idx_l, idx_r) = if options.operator2.is_some() {
-                iejoin_tuples(l, r, options, None)
-            } else {
+            let (idx_l, idx_r) = if options.operators.len() == 1 {
                 piecewise_merge_join_tuples(l, r, options, None)
+            } else {
+                iejoin_tuples(l, r, options, None)
             }?;
 
             if idx_l.is_empty() {
@@ -348,10 +347,10 @@ pub(super) fn iejoin(
     suffix: Option<PlSmallStr>,
     slice: Option<(i64, usize)>,
 ) -> PolarsResult<DataFrame> {
-    let (left_row_idx, right_row_idx) = if options.operator2.is_some() {
-        iejoin_tuples(selected_left, selected_right, options, slice)
-    } else {
+    let (left_row_idx, right_row_idx) = if options.operators.len() == 1 {
         piecewise_merge_join_tuples(selected_left, selected_right, options, slice)
+    } else {
+        iejoin_tuples(selected_left, selected_right, options, slice)
     }?;
     unsafe { materialize_join(left, right, &left_row_idx, &right_row_idx, suffix) }
 }
@@ -384,24 +383,25 @@ fn iejoin_tuples(
     options: &IEJoinOptions,
     slice: Option<(i64, usize)>,
 ) -> PolarsResult<(IdxCa, IdxCa)> {
-    if selected_left.len() != 2 {
+    let num_operators = options.operators.len();
+    if num_operators != 2 {
         return Err(
-            polars_err!(ComputeError: "IEJoin requires exactly two expressions from the left DataFrame"),
+            polars_err!(ComputeError: "IEJoin requires exactly two inequality operators"),
+        );
+    }
+    if selected_left.len() != options.operators.len() {
+        return Err(
+            polars_err!(ComputeError: format!("IEJoin requires as many expressions from the left DataFrame as there are inequality operators ({num_operators})")),
         );
     };
-    if selected_right.len() != 2 {
+    if selected_right.len() != options.operators.len() {
         return Err(
-            polars_err!(ComputeError: "IEJoin requires exactly two expressions from the right DataFrame"),
+            polars_err!(ComputeError: format!("IEJoin requires as many expressions from the right DataFrame as there are inequality operators ({num_operators})")),
         );
     };
 
-    let op1 = options.operator1;
-    let op2 = match options.operator2 {
-        None => {
-            return Err(polars_err!(ComputeError: "IEJoin requires two inequality operators"));
-        },
-        Some(op2) => op2,
-    };
+    let op1 = options.operators[0];
+    let op2 = options.operators[1];
 
     // Determine the sort order based on the comparison operators used.
     // We want to sort L1 so that "x[i] op1 x[j]" is true for j > i,
@@ -490,13 +490,13 @@ fn piecewise_merge_join_tuples(
             polars_err!(ComputeError: "Piecewise merge join requires exactly one expression from the right DataFrame"),
         );
     };
-    if options.operator2.is_some() {
+    if options.operators.len() != 1 {
         return Err(
             polars_err!(ComputeError: "Piecewise merge join expects only one inequality operator"),
         );
     }
 
-    let op = options.operator1;
+    let op = options.operators[0];
     // The left side is sorted such that if the condition is false, it will also
     // be false for the same RHS row and all following LHS rows.
     // The right side is sorted such that if the condition is true then it is also
