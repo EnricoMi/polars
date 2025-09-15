@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import random
 import sys
 import typing
+from functools import reduce
 from collections import OrderedDict
 from collections.abc import Iterator, Mapping
 from datetime import date, datetime, time, timedelta, timezone
@@ -1659,6 +1661,67 @@ def test_join_where() -> None:
 
     assert_frame_equal(out, expected)
 
+
+def test_iejoin_correctness_one_predicate() -> None:
+    do_test_iejoin_correctness(1)
+
+def test_iejoin_correctness_two_predicates() -> None:
+    do_test_iejoin_correctness(2)
+
+def test_iejoin_correctness_three_predicates() -> None:
+    do_test_iejoin_correctness(3)
+
+def test_iejoin_correctness_four_predicates() -> None:
+    do_test_iejoin_correctness(4)
+
+def do_test_iejoin_correctness(num_predicates: int) -> None:
+    assert(num_predicates > 0)
+
+    # always get the same random DataFrames
+    random.seed(42)
+
+    # shape of the tables
+    cols = num_predicates + 1
+    rows = 5
+
+    # predicates for the join
+    def predicate(l: pl.Expr, r: pl.Expr, predicate: int) -> pl.Expr:
+        ops = [pl.Expr.__lt__, pl.Expr.__gt__, pl.Expr.__le__, pl.Expr.__ge__]
+        predicate_idx = predicate % len(ops)
+        return ops[predicate_idx](l, r)
+
+    def _and(l: pl.Expr, r: pl.Expr) -> pl.Expr:
+        return l & r
+
+    predicates = [predicate(pl.col(f"left{col+1}"), pl.col(f"right{col+1}"), col) for col in range(cols-1)]
+    condition: pl.Expr = reduce(_and, predicates)
+    print(condition)
+
+    # the tables
+    left = pl.DataFrame(
+        {f"left{col+1}": [random.random() for _ in range(rows)] for col in range(cols)}
+    ).with_row_index("left_row", offset=1)
+    right = pl.DataFrame(
+        {f"right{col+1}": [random.random() for _ in range(rows)] for col in range(cols)}
+    ).with_row_index("right_row", offset=1)
+    print(left)
+    print(right)
+
+    # cross join of the tables, the actual result of the IE-Join should be a subset of this
+    cross: pl.DataFrame = left.join(right, how="cross")
+    # annotate rows based in the predicates
+    expected = cross.with_columns(condition.alias("inner"))
+    with pl.Config(tbl_rows=-1, tbl_cols=-1):
+        print(expected)
+    # the setup should produce any inner join results
+    assert(not expected.filter(pl.col("inner")).is_empty())
+
+    # perform the IE-Join
+    iejoin = left.join_where(right, condition)
+    with pl.Config(tbl_rows=-1, tbl_cols=-1):
+        print(iejoin)
+
+    assert_frame_equal(iejoin, expected.filter(pl.col("inner")).drop("inner"), check_row_order=False)
 
 def test_join_where_bad_input_type() -> None:
     east = pl.DataFrame(
