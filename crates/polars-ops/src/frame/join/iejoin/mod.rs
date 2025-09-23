@@ -12,7 +12,7 @@ use polars_core::datatypes::{IdxCa, NumericNative, PolarsNumericType};
 use polars_core::frame::DataFrame;
 use polars_core::prelude::*;
 use polars_core::series::IsSorted;
-use polars_core::utils::{_set_partition_size, split};
+use polars_core::utils::{_set_partition_size, split, Container};
 use polars_core::{POOL, with_match_physical_numeric_polars_type};
 use polars_error::{PolarsResult, polars_err};
 use polars_utils::IdxSize;
@@ -22,8 +22,8 @@ use polars_utils::total_ord::{TotalEq, TotalOrd};
 use rayon::prelude::*;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-
-use crate::frame::_finish_join;
+use arrow::pushable::Pushable;
+use crate::frame::{JoinType, _finish_join};
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -43,6 +43,7 @@ impl InequalityOperator {
 #[derive(Clone, Debug, PartialEq, Eq, Default, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct IEJoinOptions {
+    pub join_type: JoinType,
     pub operator1: InequalityOperator,
     pub operator2: Option<InequalityOperator>,
 }
@@ -131,21 +132,16 @@ fn ie_join_impl_t<T: PolarsNumericType>(
     Ok((left_row_idx, right_row_idx))
 }
 
-fn piecewise_merge_join_impl_t<T, P, UL, UR, M>(
+fn piecewise_merge_join_impl_t<T, P>(
     slice: Option<(i64, usize)>,
     left_ordered: Series,
     right_ordered: Series,
     mut pred: P,
-    mut unmatched_left: UL,
-    mut unmatched_right: UR,
-    mut left_matches_right: M,
+    join_dispatcher: &mut JoinDispatcher,
 )
 where
     T: PolarsNumericType,
     P: FnMut(&T::Native, &T::Native) -> bool,
-    UL: FnMut(Range<usize>),
-    UR: FnMut(Range<usize>),
-    M: FnMut(usize, Range<usize>),
 {
     let slice_end = slice_end_index(slice);
 
@@ -166,7 +162,7 @@ where
                 // if this is the first match, then all right rows before are unmatched
                 if match_count == 0 && right_idx > 0 {
                     let unmatched_right_row_idxs = 0..right_idx;
-                    unmatched_right(unmatched_right_row_idxs);
+                    join_dispatcher.handle_unmatched_right(unmatched_right_row_idxs);
                 }
 
                 // If the predicate is true, then it will also be true for all
@@ -176,7 +172,7 @@ where
                     Some(end) => min(right_ca.len(), (end as usize) - match_count + right_idx),
                 };
                 let included_right_row_idxs = right_idx..right_end_idx;
-                left_matches_right(left_idx, included_right_row_idxs);
+                join_dispatcher.handle_left_matches_right(left_idx, included_right_row_idxs);
                 match_count += right_end_idx - right_idx;
                 break;
             } else {
@@ -191,7 +187,7 @@ where
                 Some(end) => min(left_ca.len(), (end as usize) - match_count),
             };
             let unmatched_left_row_idxs = left_idx..left_end_idx;
-            unmatched_left(unmatched_left_row_idxs);
+            join_dispatcher.handle_unmatched_left(unmatched_left_row_idxs);
             break;
         }
         if slice_end.is_some_and(|end| match_count >= end as usize) {
@@ -370,7 +366,12 @@ unsafe fn materialize_join(
         )
     };
 
-    _finish_join(join_left, join_right, suffix)
+    // right might be empty in case of a SEMI or ANTI join, then join_left is our result
+    if right.len() == 0 {
+        Ok(join_left)
+    } else {
+        _finish_join(join_left, join_right, suffix)
+    }
 }
 
 /// Inequality join. Matches rows between two DataFrames using two inequality operators
@@ -472,6 +473,60 @@ fn iejoin_tuples(
     Ok((left_row_idx, right_row_idx))
 }
 
+
+/// A class that holds a JoinType value.
+pub struct JoinDispatcher {
+    join_type: JoinType,
+    left_idxs: Vec<usize>,
+    right_idxs: Vec<usize>,
+}
+
+impl JoinDispatcher {
+    pub fn new(join_type: JoinType) -> Self {
+        Self {
+            join_type,
+            left_idxs: vec![],
+            right_idxs: vec![],
+        }
+    }
+
+    pub fn handle_left_matches_right(&mut self, left_match_idx: usize, right_match_idxs: Range<usize>) {
+        match self.join_type {
+            JoinType::Left | JoinType::Inner | JoinType::Right | JoinType::Full =>
+                right_match_idxs.for_each(|right_match_idx| {
+                    self.left_idxs.push(left_match_idx);
+                    self.right_idxs.push(right_match_idx);
+                }),
+            JoinType::Semi =>
+                self.left_idxs.push(left_match_idx),
+            _ => {}
+        };
+    }
+
+    pub fn handle_unmatched_left(&mut self, left_unmatched_idxs: Range<usize>) {
+        match self.join_type {
+            JoinType::Left | JoinType::Full => {
+                self.left_idxs.extend(left_unmatched_idxs.clone());
+                self.right_idxs.extend_null_constant(left_unmatched_idxs.len())
+            },
+            JoinType::Anti => {
+                self.left_idxs.extend(left_unmatched_idxs);
+            },
+            _ => {}
+        };
+    }
+
+    pub fn handle_unmatched_right(&mut self, right_unmatched_idxs: Range<usize>) {
+        match self.join_type {
+            JoinType::Right | JoinType::Full => {
+                self.left_idxs.extend_null_constant(right_unmatched_idxs.len());
+                self.right_idxs.extend(right_unmatched_idxs)
+            },
+            _ => {}
+        };
+    }
+}
+
 /// Piecewise merge join, for joins with only a single inequality.
 fn piecewise_merge_join_tuples(
     selected_left: Vec<Series>,
@@ -556,75 +611,64 @@ fn piecewise_merge_join_tuples(
         .as_ref()
         .map(|order| order.downcast_get(0).unwrap().values().as_slice());
 
-    let mut left_row_idx: Vec<IdxSize> = vec![];
-    let mut right_row_idx: Vec<IdxSize> = vec![];
-
     debug_assert!(left_order.is_none_or(|order| order.len() == left_ordered.len()));
     debug_assert!(right_order.is_none_or(|order| order.len() == right_ordered.len()));
 
-    let handle_left_matches_right = |left_idx: usize, right_idxs: Range<usize>| {
-        let left_row = match left_order {
-            None => left_idx as IdxSize,
-            Some(order) => order[left_idx],
-        };
-        right_idxs.for_each(|right_idx| {
-            let right_row = match right_order {
-                None => right_idx as IdxSize,
-                Some(order) => order[right_idx],
-            };
-            left_row_idx.push(left_row);
-            right_row_idx.push(right_row);
-        });
-    };
-    let handle_unmatched_left = |left_idxs: Range<usize>| {
+    print!("join type {}", options.join_type);
 
-    };
-    let handle_unmatched_right = |right_idxs: Range<usize>| {
-
-    };
+    let mut join_dispatcher = JoinDispatcher::new(options.join_type.clone());
 
     with_match_physical_numeric_polars_type!(left_ordered.dtype(), |$T| {
         match op {
-            InequalityOperator::Lt => piecewise_merge_join_impl_t::<$T, _, _, _, _>(
+            InequalityOperator::Lt => piecewise_merge_join_impl_t::<$T, _>(
                 slice,
                 left_ordered,
                 right_ordered,
                 |l, r| l.tot_lt(r),
-                handle_unmatched_left,
-                handle_unmatched_right,
-                handle_left_matches_right,
+                &mut join_dispatcher,
             ),
-            InequalityOperator::LtEq => piecewise_merge_join_impl_t::<$T, _, _, _, _>(
+            InequalityOperator::LtEq => piecewise_merge_join_impl_t::<$T, _>(
                 slice,
                 left_ordered,
                 right_ordered,
                 |l, r| l.tot_le(r),
-                handle_unmatched_left,
-                handle_unmatched_right,
-                handle_left_matches_right,
+                &mut join_dispatcher,
             ),
-            InequalityOperator::Gt => piecewise_merge_join_impl_t::<$T, _, _, _, _>(
+            InequalityOperator::Gt => piecewise_merge_join_impl_t::<$T, _>(
                 slice,
                 left_ordered,
                 right_ordered,
                 |l, r| l.tot_gt(r),
-                handle_unmatched_left,
-                handle_unmatched_right,
-                handle_left_matches_right,
+                &mut join_dispatcher,
             ),
-            InequalityOperator::GtEq => piecewise_merge_join_impl_t::<$T, _, _, _, _>(
+            InequalityOperator::GtEq => piecewise_merge_join_impl_t::<$T, _>(
                 slice,
                 left_ordered,
                 right_ordered,
                 |l, r| l.tot_ge(r),
-                handle_unmatched_left,
-                handle_unmatched_right,
-                handle_left_matches_right,
+                &mut join_dispatcher,
             ),
         }
     });
 
-    debug_assert_eq!(left_row_idx.len(), right_row_idx.len());
+    let (left_idxs, right_idxs) = (join_dispatcher.left_idxs, join_dispatcher.right_idxs);
+
+    fn idxs_to_rows(idxs: Vec<usize>, order: Option<&[IdxSize]>) -> Vec<IdxSize> {
+        match order {
+            None => idxs.iter().map(|v| *v as IdxSize).collect(),
+            Some(order) => idxs.into_iter().map(|v| order[v]).collect(),
+        }
+    }
+
+    let left_row_idx = idxs_to_rows(left_idxs, left_order);
+    let right_row_idx = idxs_to_rows(right_idxs, right_order);
+
+    if options.join_type == JoinType::Semi || options.join_type == JoinType::Anti {
+        debug_assert_eq!(right_row_idx.len(), 0);
+    } else {
+        debug_assert_eq!(left_row_idx.len(), right_row_idx.len());
+    }
+
     let left_row_idx = IdxCa::from_vec("".into(), left_row_idx);
     let right_row_idx = IdxCa::from_vec("".into(), right_row_idx);
     let (left_row_idx, right_row_idx) = match slice {

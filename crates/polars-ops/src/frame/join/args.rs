@@ -38,7 +38,7 @@ impl JoinArgs {
     }
 }
 
-#[derive(Clone, PartialEq, Hash, Default, IntoStaticStr)]
+#[derive(Clone, PartialEq, Eq, Hash, Default, IntoStaticStr)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "dsl-schema", derive(schemars::JsonSchema))]
 pub enum JoinType {

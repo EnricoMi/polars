@@ -320,15 +320,17 @@ fn insert_fitting_join(
         _ if !ie_op.is_empty() => {
             // We can only IE join up to 2 operators
 
+            let join_type = options.args.how;
             let operator1 = ie_op[0];
             let operator2 = ie_op.get(1).copied();
 
             // Do an IEjoin.
-            options.args.how = JoinType::IEJoin;
             options.options = Some(JoinTypeOptionsIR::IEJoin(IEJoinOptions {
+                join_type,
                 operator1,
                 operator2,
             }));
+            options.args.how = JoinType::IEJoin;
             // We need to make sure not to delete any columns
             options.args.coalesce = JoinCoalesce::KeepColumns;
 

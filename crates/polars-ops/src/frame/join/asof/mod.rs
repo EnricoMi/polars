@@ -201,6 +201,8 @@ pub struct AsOfOptions {
     pub check_sortedness: bool,
 }
 
+impl Eq for AsOfOptions {}
+
 fn check_asof_columns(
     a: &Series,
     b: &Series,
