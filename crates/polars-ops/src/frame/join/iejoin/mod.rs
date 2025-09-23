@@ -3,6 +3,7 @@ mod filtered_bit_array;
 mod l1_l2;
 
 use std::cmp::min;
+use std::ops::Range;
 
 use filtered_bit_array::FilteredBitArray;
 use l1_l2::*;
@@ -130,28 +131,26 @@ fn ie_join_impl_t<T: PolarsNumericType>(
     Ok((left_row_idx, right_row_idx))
 }
 
-fn piecewise_merge_join_impl_t<T, P>(
+fn piecewise_merge_join_impl_t<T, P, UL, UR, M>(
     slice: Option<(i64, usize)>,
-    left_order: Option<&[IdxSize]>,
-    right_order: Option<&[IdxSize]>,
     left_ordered: Series,
     right_ordered: Series,
     mut pred: P,
-) -> PolarsResult<(Vec<IdxSize>, Vec<IdxSize>)>
+    mut unmatched_left: UL,
+    mut unmatched_right: UR,
+    mut left_matches_right: M,
+)
 where
     T: PolarsNumericType,
     P: FnMut(&T::Native, &T::Native) -> bool,
+    UL: FnMut(Range<usize>),
+    UR: FnMut(Range<usize>),
+    M: FnMut(usize, Range<usize>),
 {
     let slice_end = slice_end_index(slice);
 
-    let mut left_row_idx: Vec<IdxSize> = vec![];
-    let mut right_row_idx: Vec<IdxSize> = vec![];
-
     let left_ca: &ChunkedArray<T> = left_ordered.as_ref().as_ref();
     let right_ca: &ChunkedArray<T> = right_ordered.as_ref().as_ref();
-
-    debug_assert!(left_order.is_none_or(|order| order.len() == left_ca.len()));
-    debug_assert!(right_order.is_none_or(|order| order.len() == right_ca.len()));
 
     let mut left_idx = 0;
     let mut right_idx = 0;
@@ -164,24 +163,20 @@ where
             debug_assert!(right_ca.get(right_idx).is_some());
             let right_val = unsafe { right_ca.value_unchecked(right_idx) };
             if pred(&left_val, &right_val) {
+                // if this is the first match, then all right rows before are unmatched
+                if match_count == 0 && right_idx > 0 {
+                    let unmatched_right_row_idxs = 0..right_idx;
+                    unmatched_right(unmatched_right_row_idxs);
+                }
+
                 // If the predicate is true, then it will also be true for all
                 // remaining rows from the right side.
-                let left_row = match left_order {
-                    None => left_idx as IdxSize,
-                    Some(order) => order[left_idx],
-                };
                 let right_end_idx = match slice_end {
                     None => right_ca.len(),
                     Some(end) => min(right_ca.len(), (end as usize) - match_count + right_idx),
                 };
-                for included_right_row_idx in right_idx..right_end_idx {
-                    let right_row = match right_order {
-                        None => included_right_row_idx as IdxSize,
-                        Some(order) => order[included_right_row_idx],
-                    };
-                    left_row_idx.push(left_row);
-                    right_row_idx.push(right_row);
-                }
+                let included_right_row_idxs = right_idx..right_end_idx;
+                left_matches_right(left_idx, included_right_row_idxs);
                 match_count += right_end_idx - right_idx;
                 break;
             } else {
@@ -191,6 +186,12 @@ where
         if right_idx == right_ca.len() {
             // We've reached the end of the right side
             // so there can be no more matches for LHS rows
+            let left_end_idx = match slice_end {
+                None => left_ca.len(),
+                Some(end) => min(left_ca.len(), (end as usize) - match_count),
+            };
+            let unmatched_left_row_idxs = left_idx..left_end_idx;
+            unmatched_left(unmatched_left_row_idxs);
             break;
         }
         if slice_end.is_some_and(|end| match_count >= end as usize) {
@@ -198,8 +199,6 @@ where
         }
         left_idx += 1;
     }
-
-    Ok((left_row_idx, right_row_idx))
 }
 
 pub(super) fn iejoin_par(
@@ -557,42 +556,73 @@ fn piecewise_merge_join_tuples(
         .as_ref()
         .map(|order| order.downcast_get(0).unwrap().values().as_slice());
 
-    let (left_row_idx, right_row_idx) = with_match_physical_numeric_polars_type!(left_ordered.dtype(), |$T| {
+    let mut left_row_idx: Vec<IdxSize> = vec![];
+    let mut right_row_idx: Vec<IdxSize> = vec![];
+
+    debug_assert!(left_order.is_none_or(|order| order.len() == left_ordered.len()));
+    debug_assert!(right_order.is_none_or(|order| order.len() == right_ordered.len()));
+
+    let handle_left_matches_right = |left_idx: usize, right_idxs: Range<usize>| {
+        let left_row = match left_order {
+            None => left_idx as IdxSize,
+            Some(order) => order[left_idx],
+        };
+        right_idxs.for_each(|right_idx| {
+            let right_row = match right_order {
+                None => right_idx as IdxSize,
+                Some(order) => order[right_idx],
+            };
+            left_row_idx.push(left_row);
+            right_row_idx.push(right_row);
+        });
+    };
+    let handle_unmatched_left = |left_idxs: Range<usize>| {
+
+    };
+    let handle_unmatched_right = |right_idxs: Range<usize>| {
+
+    };
+
+    with_match_physical_numeric_polars_type!(left_ordered.dtype(), |$T| {
         match op {
-            InequalityOperator::Lt => piecewise_merge_join_impl_t::<$T, _>(
+            InequalityOperator::Lt => piecewise_merge_join_impl_t::<$T, _, _, _, _>(
                 slice,
-                left_order,
-                right_order,
                 left_ordered,
                 right_ordered,
                 |l, r| l.tot_lt(r),
+                handle_unmatched_left,
+                handle_unmatched_right,
+                handle_left_matches_right,
             ),
-            InequalityOperator::LtEq => piecewise_merge_join_impl_t::<$T, _>(
+            InequalityOperator::LtEq => piecewise_merge_join_impl_t::<$T, _, _, _, _>(
                 slice,
-                left_order,
-                right_order,
                 left_ordered,
                 right_ordered,
                 |l, r| l.tot_le(r),
+                handle_unmatched_left,
+                handle_unmatched_right,
+                handle_left_matches_right,
             ),
-            InequalityOperator::Gt => piecewise_merge_join_impl_t::<$T, _>(
+            InequalityOperator::Gt => piecewise_merge_join_impl_t::<$T, _, _, _, _>(
                 slice,
-                left_order,
-                right_order,
                 left_ordered,
                 right_ordered,
                 |l, r| l.tot_gt(r),
+                handle_unmatched_left,
+                handle_unmatched_right,
+                handle_left_matches_right,
             ),
-            InequalityOperator::GtEq => piecewise_merge_join_impl_t::<$T, _>(
+            InequalityOperator::GtEq => piecewise_merge_join_impl_t::<$T, _, _, _, _>(
                 slice,
-                left_order,
-                right_order,
                 left_ordered,
                 right_ordered,
                 |l, r| l.tot_ge(r),
+                handle_unmatched_left,
+                handle_unmatched_right,
+                handle_left_matches_right,
             ),
         }
-    })?;
+    });
 
     debug_assert_eq!(left_row_idx.len(), right_row_idx.len());
     let left_row_idx = IdxCa::from_vec("".into(), left_row_idx);
