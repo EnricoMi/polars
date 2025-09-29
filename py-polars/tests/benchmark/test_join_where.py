@@ -40,6 +40,62 @@ def test_non_strict_inequalities(east_west: tuple[pl.DataFrame, pl.DataFrame]) -
     assert len(result) > 0
 
 
+def test_three_strict_inequalities(east_west: tuple[pl.DataFrame, pl.DataFrame]) -> None:
+    east, west = east_west
+    result = (
+        east.lazy()
+        .join_where(
+            west.lazy(),
+            [pl.col("dur") < pl.col("time"), pl.col("rev") > pl.col("cost"), pl.col("cores") < pl.col("cores_right")],
+        )
+        .collect()
+    )
+
+    assert len(result) > 0
+
+
+def test_three_non_strict_inequalities(east_west: tuple[pl.DataFrame, pl.DataFrame]) -> None:
+    east, west = east_west
+    result = (
+        east.lazy()
+        .join_where(
+            west.lazy(),
+            [pl.col("dur") <= pl.col("time"), pl.col("rev") >= pl.col("cost"), pl.col("cores") <= pl.col("cores_right")],
+        )
+        .collect()
+    )
+
+    assert len(result) > 0
+
+
+def test_four_strict_inequalities(east_west: tuple[pl.DataFrame, pl.DataFrame]) -> None:
+    east, west = east_west
+    result = (
+        east.lazy()
+        .join_where(
+            west.lazy(),
+            [pl.col("dur") < pl.col("time"), pl.col("rev") > pl.col("cost"), pl.col("cores") < pl.col("cores_right"), pl.col("id") > pl.col("t_id")],
+        )
+        .collect()
+    )
+
+    assert len(result) > 0
+
+
+def test_four_non_strict_inequalities(east_west: tuple[pl.DataFrame, pl.DataFrame]) -> None:
+    east, west = east_west
+    result = (
+        east.lazy()
+        .join_where(
+            west.lazy(),
+            [pl.col("dur") <= pl.col("time"), pl.col("rev") >= pl.col("cost"), pl.col("cores") <= pl.col("cores_right"), pl.col("id") >= pl.col("t_id")],
+        )
+        .collect()
+    )
+
+    assert len(result) > 0
+
+
 def test_single_inequality(east_west: tuple[pl.DataFrame, pl.DataFrame]) -> None:
     east, west = east_west
     result = (
