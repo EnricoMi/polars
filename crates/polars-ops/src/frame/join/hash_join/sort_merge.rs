@@ -101,7 +101,7 @@ where
 
     let indexes = offsets.into_par_iter().map(|(offset, len)| {
         let slice_left = &slice_left[offset..offset + len];
-        sorted_join::inner::join(slice_left, slice_right, offset as IdxSize)
+        sorted_join::inner::join(slice_left, slice_right, offset as IdxSize, sorted_join::inner::cartesian)
     });
     let indexes = POOL.install(|| indexes.collect::<Vec<_>>());
 

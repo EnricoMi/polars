@@ -1,9 +1,11 @@
+use std::ops::Range;
 use super::*;
 
 pub fn join<T: PartialOrd + Copy + Debug>(
     left: &[T],
     right: &[T],
     left_offset: IdxSize,
+    consume: impl Fn(Range<IdxSize>, Range<IdxSize>) -> InnerJoinIds,
 ) -> InnerJoinIds {
     if left.is_empty() || right.is_empty() {
         return (vec![], vec![]);
@@ -22,34 +24,23 @@ pub fn join<T: PartialOrd + Copy + Debug>(
     let mut left_idx = left.partition_point(|v| v < &first_right) as IdxSize;
 
     for &val_l in &left[left_idx as usize..] {
+        let mut left_end = left_idx;
+        while left.len() > left_end as usize && left[left_end as usize] == val_l {
+            left_end += 1
+        }
+
         while let Some(&val_r) = right.get(right_idx as usize) {
             // matching join key
             if val_l == val_r {
-                out_lhs.push(left_idx + left_offset);
-                out_rhs.push(right_idx);
-                let current_idx = right_idx;
-
-                loop {
-                    right_idx += 1;
-                    match right.get(right_idx as usize) {
-                        // rhs depleted
-                        None => {
-                            // reset right index because the next lhs value can be the same
-                            right_idx = current_idx;
-                            break;
-                        },
-                        Some(&val_r) => {
-                            if val_l == val_r {
-                                out_lhs.push(left_idx + left_offset);
-                                out_rhs.push(right_idx);
-                            } else {
-                                // reset right index because the next lhs value can be the same
-                                right_idx = current_idx;
-                                break;
-                            }
-                        },
-                    }
+                let mut right_end = right_idx;
+                while right.len() > right_end as usize && right[right_end as usize] == val_r {
+                    right_end += 1
                 }
+
+                let (lhs, rhs) = consume(left_idx + left_offset..left_end + left_offset, right_idx..right_end);
+                out_lhs.extend(lhs);
+                out_rhs.extend(rhs);
+                right_idx = right_end;
                 break;
             }
 
@@ -60,9 +51,48 @@ pub fn join<T: PartialOrd + Copy + Debug>(
             // continue looping the right side
             right_idx += 1;
         }
-        left_idx += 1;
+        left_idx = left_end;
+        if left_idx as usize >= left.len() || right_idx as usize >= right.len() {
+            break
+        }
     }
     (out_lhs, out_rhs)
+}
+
+pub fn cartesian(
+    left_range: Range<IdxSize>,
+    right_range:Range<IdxSize>,
+) -> InnerJoinIds {
+    match (left_range.len(), right_range.len()) {
+        (0, 0) => (vec![], vec![]),
+        (1, 1) => (vec![left_range.start as IdxSize], vec![right_range.start as IdxSize]),
+        _ => {
+            let cap = left_range.len() * right_range.len();
+            let mut out_lhs = Vec::with_capacity(cap);
+            let mut out_rhs = Vec::with_capacity(cap);
+
+            match (left_range.len(), right_range.len()) {
+                (_, 1) =>
+                    for left in left_range.clone() {
+                        out_lhs.push(left);
+                        out_rhs.push(right_range.start as IdxSize);
+                    }
+                (1, _) =>
+                    for right in right_range.clone() {
+                        out_lhs.push(left_range.start as IdxSize);
+                        out_rhs.push(right);
+                    }
+                _ =>
+                    for left in left_range {
+                        for right in right_range.clone() {
+                            out_lhs.push(left);
+                            out_rhs.push(right);
+                        }
+                    }
+            }
+            (out_lhs, out_rhs)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -74,14 +104,14 @@ mod test {
         let lhs = &[0, 1, 1, 2, 3, 5];
         let rhs = &[0, 1, 1, 3, 4];
 
-        let (l_idx, r_idx) = join(lhs, rhs, 0);
+        let (l_idx, r_idx) = join(lhs, rhs, 0, cartesian);
 
         assert_eq!(&l_idx, &[0, 1, 1, 2, 2, 4]);
         assert_eq!(&r_idx, &[0, 1, 2, 1, 2, 3]);
 
         let lhs = &[4, 4, 4, 4, 5, 6, 6, 7, 7, 7];
         let rhs = &[0, 1, 2, 3, 4, 4, 4, 6, 7, 7];
-        let (l_idx, r_idx) = join(lhs, rhs, 0);
+        let (l_idx, r_idx) = join(lhs, rhs, 0, cartesian);
 
         assert_eq!(
             &l_idx,
