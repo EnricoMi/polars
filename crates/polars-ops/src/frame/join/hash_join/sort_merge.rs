@@ -227,7 +227,7 @@ pub(crate) fn _sort_or_hash_inner(
             if is_numeric && size_factor_rhs < size_factor_acceptable =>
         {
             if verbose {
-                eprintln!("right key will be descending sorted in inner join operation.")
+                eprintln!("right key will temporarily be sorted in inner join operation.")
             }
 
             let sort_idx = s_right.arg_sort(SortOptions {
@@ -249,13 +249,14 @@ pub(crate) fn _sort_or_hash_inner(
                 });
             });
 
+            // left key was and still is sorted ascendingly
             Ok(((left, right), true))
         },
         (_, IsSorted::Ascending, true)
             if is_numeric && size_factor_lhs < size_factor_acceptable =>
         {
             if verbose {
-                eprintln!("left key will be descending sorted in inner join operation.")
+                eprintln!("left key will temporarily be sorted in inner join operation.")
             }
 
             let sort_idx = s_left.arg_sort(SortOptions {
@@ -277,7 +278,7 @@ pub(crate) fn _sort_or_hash_inner(
                 });
             });
 
-            // set sorted to `false` as we descending sorted the left key.
+            // set sorted to `false` as we just reverted the temporary order of the left key.
             Ok(((left, right), false))
         },
         _ => s_left.hash_join_inner(s_right, validate, nulls_equal),
