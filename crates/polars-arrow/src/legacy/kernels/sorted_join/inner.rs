@@ -1,11 +1,11 @@
-use std::ops::Range;
+use polars_utils::itertools::Itertools;
 use super::*;
 
 pub fn join<T: PartialOrd + Copy + Debug>(
     left: &[T],
     right: &[T],
     left_offset: IdxSize,
-    consume: impl Fn(Range<IdxSize>, Range<IdxSize>) -> InnerJoinIds,
+    consume: impl Fn(Vec<IdxSize>, Vec<IdxSize>) -> InnerJoinIds,
 ) -> InnerJoinIds {
     if left.is_empty() || right.is_empty() {
         return (vec![], vec![]);
@@ -37,7 +37,9 @@ pub fn join<T: PartialOrd + Copy + Debug>(
                     right_end += 1
                 }
 
-                let (lhs, rhs) = consume(left_idx + left_offset..left_end + left_offset, right_idx..right_end);
+                let left_idxs = (left_idx + left_offset..left_end + left_offset).collect_vec();
+                let right_idxs = (right_idx..right_end).collect_vec();
+                let (lhs, rhs) = consume(left_idxs, right_idxs);
                 out_lhs.extend(lhs);
                 out_rhs.extend(rhs);
                 right_idx = right_end;
@@ -60,36 +62,22 @@ pub fn join<T: PartialOrd + Copy + Debug>(
 }
 
 pub fn cartesian(
-    left_range: Range<IdxSize>,
-    right_range:Range<IdxSize>,
+    left_idxs: Vec<IdxSize>,
+    right_idxs: Vec<IdxSize>,
 ) -> InnerJoinIds {
-    match (left_range.len(), right_range.len()) {
+    // this maintains left_right order
+    let (left_len, right_len) = (left_idxs.len(), right_idxs.len());
+    match (left_len, right_len) {
         (0, 0) => (vec![], vec![]),
-        (1, 1) => (vec![left_range.start as IdxSize], vec![right_range.start as IdxSize]),
+        (1, 1) => (left_idxs, right_idxs),
+        (1, _) => (left_idxs.repeat(right_len), right_idxs),
+        (_, 1) => (left_idxs, right_idxs.repeat(left_len)),
         _ => {
-            let cap = left_range.len() * right_range.len();
-            let mut out_lhs = Vec::with_capacity(cap);
-            let mut out_rhs = Vec::with_capacity(cap);
-
-            match (left_range.len(), right_range.len()) {
-                (_, 1) =>
-                    for left in left_range.clone() {
-                        out_lhs.push(left);
-                        out_rhs.push(right_range.start as IdxSize);
-                    }
-                (1, _) =>
-                    for right in right_range.clone() {
-                        out_lhs.push(left_range.start as IdxSize);
-                        out_rhs.push(right);
-                    }
-                _ =>
-                    for left in left_range {
-                        for right in right_range.clone() {
-                            out_lhs.push(left);
-                            out_rhs.push(right);
-                        }
-                    }
+            let mut out_lhs = Vec::with_capacity(left_len * right_len);
+            for left_idx in left_idxs {
+                out_lhs.extend(vec![left_idx; right_len]);
             }
+            let out_rhs = right_idxs.repeat(left_len);
             (out_lhs, out_rhs)
         }
     }
