@@ -85,6 +85,7 @@ pub fn cartesian(
 
 #[cfg(test)]
 mod test {
+    use polars_utils::itertools::Itertools;
     use super::*;
 
     #[test]
@@ -109,5 +110,19 @@ mod test {
             &r_idx,
             &[4, 5, 6, 4, 5, 6, 4, 5, 6, 4, 5, 6, 7, 7, 8, 9, 8, 9, 8, 9]
         );
+    }
+
+    #[test]
+    fn test_cartesian() {
+        let N = 100;
+        let M = 10;
+        let left_idxs = (0..N);
+        let right_idxs = (N..N + M);
+        let (l_idxs, r_idxs) = cartesian(left_idxs.collect_vec(), right_idxs.collect_vec());
+        let mut expected_l_idxs = (0..N).collect_vec().repeat(M as usize);
+        expected_l_idxs.sort();
+        let expected_r_idxs = (N..N + M).collect_vec().repeat(N as usize);
+        assert_eq!(l_idxs, expected_l_idxs);
+        assert_eq!(r_idxs, expected_r_idxs);
     }
 }
