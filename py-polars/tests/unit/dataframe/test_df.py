@@ -1674,7 +1674,19 @@ def test_iejoin_correctness_three_predicates() -> None:
 def test_iejoin_correctness_four_predicates() -> None:
     do_test_iejoin_correctness(4)
 
-def do_test_iejoin_correctness(num_predicates: int) -> None:
+def test_iejoin_correctness_one_predicate_with_equality() -> None:
+    do_test_iejoin_correctness(1, with_equality=True)
+
+def test_iejoin_correctness_two_predicates_with_equality() -> None:
+    do_test_iejoin_correctness(2, with_equality=True)
+
+def test_iejoin_correctness_three_predicates_with_equality() -> None:
+    do_test_iejoin_correctness(3, with_equality=True)
+
+def test_iejoin_correctness_four_predicates_with_equality() -> None:
+    do_test_iejoin_correctness(4, with_equality=True)
+
+def do_test_iejoin_correctness(num_predicates: int, with_equality: bool = False) -> None:
     assert(num_predicates > 0)
 
     # always get the same random DataFrames
@@ -1682,7 +1694,12 @@ def do_test_iejoin_correctness(num_predicates: int) -> None:
 
     # shape of the tables
     cols = num_predicates + 1
-    rows = 5
+    if with_equality:
+        ids = 3
+        rows_per_id = 3
+        rows = ids * rows_per_id
+    else:
+        rows = 5
 
     # predicates for the join
     def predicate(l: pl.Expr, r: pl.Expr, predicate: int) -> pl.Expr:
@@ -1693,7 +1710,8 @@ def do_test_iejoin_correctness(num_predicates: int) -> None:
     def _and(l: pl.Expr, r: pl.Expr) -> pl.Expr:
         return l & r
 
-    predicates = [predicate(pl.col(f"left{col+1}"), pl.col(f"right{col+1}"), col) for col in range(cols-1)]
+    predicates = [pl.col("left_id") == pl.col("right_id")] if with_equality else []
+    predicates.extend([predicate(pl.col(f"left{col+1}"), pl.col(f"right{col+1}"), col) for col in range(cols-1)])
     condition: pl.Expr = reduce(_and, predicates)
     print(condition)
 
@@ -1704,6 +1722,9 @@ def do_test_iejoin_correctness(num_predicates: int) -> None:
     right = pl.DataFrame(
         {f"right{col+1}": [random.random() for _ in range(rows)] for col in range(cols)}
     ).with_row_index("right_row", offset=1)
+    if with_equality:
+        left = left.with_columns(left_id=(pl.col("left_row") - 1) // rows_per_id + 1)
+        right = right.with_columns(right_id=(pl.col("right_row") - 1) // rows_per_id + 1)
     print(left)
     print(right)
 
